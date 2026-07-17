@@ -1,0 +1,484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPANET Visualizer</title>
+
+    <!-- Leaflet.js for Interactive Map -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            display: flex;
+            margin: 0;
+            height: 100vh;
+        }
+
+        .container {
+            display: flex;
+            width: 100%;
+            height: 100%;
+        }
+
+        .sidebar {
+            width: 25%;
+            padding: 20px;
+            background: #f4f4f4;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .content {
+            width: 75%;
+            padding: 20px;
+            text-align: center;
+            overflow-y: auto;
+        }
+
+        button {
+            display: block;
+            margin-top: 10px;
+            padding: 10px;
+            width: 100%;
+            background: #007BFF;
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #0056b3;
+        }
+
+        select, input {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+        }
+
+        #map {
+            width: 100%;
+            height: 700px;
+            background-color: lightgray;
+        }
+
+        #output img {
+            max-width: 100%;
+            margin-top: 10px;
+        }
+
+        /* Scrollable Table */
+        #visualizationContainer {
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-y: hidden;
+}
+
+
+        #graphContainer {
+            margin-top: 20px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="container">
+        <!-- Sidebar (Left Side for Inputs) -->
+        <div class="sidebar">
+            <h2>Upload EPANET File</h2>
+            <input type="file" id="fileUpload" accept=".inp">
+            <button onclick="uploadFile()">Upload</button>
+            <div id="uploadStatus"></div> <!-- Shows upload status -->
+
+            <h2>Visualization Options</h2>
+
+            <label>Type:</label>
+            <select id="viewType">
+                <option value="" selected disabled>Select Option</option>
+                <option value="static">Static</option>
+                <option value="animated">Animated</option>
+            </select>
+
+            <label>Element:</label>
+            <select id="elementType">
+                <option value="" selected disabled>Select Option</option>
+                <option value="node">Node</option>
+                <option value="link">Link</option>
+            </select>
+
+            <label>Parameter:</label>
+            <select id="parameter">
+                <option value="" selected disabled>Select Option</option>
+            </select>
+
+            <label>Time Stamp:</label>
+            <input type="text" id="timeStamp" placeholder="DD:HH:MM">
+
+            <button onclick="generateVisualization()">Run</button>
+            
+            <div style="margin-top: 30px; text-align: center;">
+                <img src="/static/green_marker2.png" alt="Green Marker" width="400" style="height: auto !important; opacity: 0.9;">
+            </div>            
+        </div>
+
+        <!-- Content Area (Right Side for Map & Visualization) -->
+        <div class="content">
+            <h2>Visualization</h2>
+        
+            <!-- Placeholder message before uploading a file -->
+            <div id="placeholderMessage" style="text-align: center; font-style: italic; color: gray;">
+                No visualization available. Please upload a file.
+            </div>
+        
+            <!-- Map Container (Hidden Initially) -->
+            <div id="mapContainer" style="display: none;">
+                <div id="map"></div>
+            </div>
+        
+            <!-- Visualization Container -->
+            <div id="visualizationContainer" style="display: none;"></div>
+        
+            <!-- Loading Message (Hidden Initially) -->
+            <div id="loadingMessage" style="display: none; text-align: center; font-style: italic; color: gray;">
+                Loading visualization... Please wait.
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Leaflet.js for Interactive Map -->
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+
+    <script>
+        // Dropdown update based on Node/Link selection
+        document.getElementById("elementType").addEventListener("change", function () {
+            let parameterDropdown = document.getElementById("parameter");
+            parameterDropdown.innerHTML = '<option value="" selected disabled>Select Option</option>';
+
+            if (this.value === "node") {
+                ["Demand", "Head", "Pressure"].forEach(param => {
+                    let option = new Option(param, param.toLowerCase());
+                    parameterDropdown.add(option);
+                });
+            } else {
+                // ✅ Use correct back-end parameter values
+                const linkParams = {
+                    "Flow Rate": "flowrate",
+                    "Velocity": "velocity",
+                    "Unit Head Loss": "unit_head_loss"
+                };
+                for (const [key, value] of Object.entries(linkParams)) {
+                    let option = new Option(key, value);
+                    parameterDropdown.add(option);
+                }
+            }
+        });
+
+        // ✅ Function to clear placeholder text when visualization is generated
+        // Function to clear placeholder text
+function clearPlaceholder() {
+    let placeholder = document.getElementById("placeholderText");
+    if (placeholder) {
+        placeholder.style.display = "none"; // Hide placeholder
+    }
+}
+
+// Upload file function
+function uploadFile() {
+    let fileInput = document.getElementById("fileUpload");
+    let file = fileInput.files[0];
+
+    if (!file) {
+        alert("Please select a file first!");
+        return;
+    }
+
+    let formData = new FormData();
+    formData.append("file", file);
+
+    fetch("/upload", {
+        method: "POST",
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.message.includes("successfully")) {
+            document.getElementById("uploadStatus").innerHTML = `<p style="color: green;">✅ ${data.message}</p>`;
+
+            // Hide placeholder and show the map
+            document.getElementById("placeholderMessage").style.display = "none";
+            document.getElementById("mapContainer").style.display = "block";
+
+            displayNetworkLayout(); // Load map after upload
+        } else {
+            document.getElementById("uploadStatus").innerHTML = `<p style="color: red;">❌ ${data.message}</p>`;
+        }
+    })
+    .catch(error => {
+        document.getElementById("uploadStatus").innerHTML = `<p style="color: red;">❌ File upload failed!</p>`;
+    });
+}
+
+
+        // Display Blank EPANET Layout
+        function displayNetworkLayout() {
+    fetch("/get_network")
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert("Error loading EPANET network: " + data.error);
+            return;
+        }
+
+        if (window.epanetMap) {
+            window.epanetMap.remove();
+        }
+
+        const firstNode = data.nodes[0];
+        window.epanetMap = L.map("map").setView([firstNode.lat, firstNode.lon], 18);
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+            attribution: '&copy; OpenStreetMap contributors'
+        }).addTo(window.epanetMap);
+
+        if (window.layoutLayerGroup) {
+            window.layoutLayerGroup.clearLayers();
+        } 
+        else {
+            window.layoutLayerGroup = L.layerGroup().addTo(window.epanetMap);
+        }
+
+        data.nodes.forEach(node => {
+            L.circleMarker([node.lat, node.lon], {
+                color: "blue", radius: 4
+            })
+            .bindPopup(`Node: ${node.name}`)
+            .addTo(window.layoutLayerGroup);
+        });
+
+
+        data.links.forEach(link => {
+            L.polyline([link.start, link.end], {
+                color: "black", weight: 2
+            }).addTo(window.epanetMap);
+        });
+    })
+    .catch(error => {
+        console.error("[ERROR] Failed to load network:", error);
+        alert("Failed to load EPANET network.");
+    });
+}
+
+
+
+        function askTimeSeriesGraph() {
+            let userResponse = confirm("Do you want to see a time series graph?");
+            if (userResponse) {
+                let nodeOrAll = prompt("Do you want to see a graph for a specific node or all nodes? (Enter 'all' or node ID)");
+                if (nodeOrAll !== null) {
+                    generateTimeSeriesGraph(nodeOrAll);
+                }
+            }
+        }
+
+        function generateTimeSeriesGraph(nodeId) {
+            fetch("/time_series", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ node_id: nodeId })
+            })
+            .then(response => response.text())
+            .then(data => {
+                document.getElementById("graphContainer").innerHTML = `<img src="/static/timeseries.png">`;
+            })
+            .catch(error => {
+                alert("Failed to fetch time series graph.");
+            });
+        }
+
+        // Generate Visualization
+        // Function to generate visualization
+        function generateVisualization() {
+    let viewType = document.getElementById("viewType").value;
+    let elementType = document.getElementById("elementType").value;
+    let parameter = document.getElementById("parameter").value;
+    let timeStamp = document.getElementById("timeStamp").value;
+
+    if (!viewType || !elementType || !parameter || !timeStamp) {
+        alert("Please select all parameters before generating visualization.");
+        return;
+    }
+
+    let requestData = { 
+        view_type: viewType, 
+        element_type: elementType, 
+        parameter: parameter, 
+        time_stamp: timeStamp 
+    };
+
+    // Hide previous content and show loading
+    document.getElementById("mapContainer").style.display = "none";
+    document.getElementById("visualizationContainer").style.display = "none";
+    document.getElementById("loadingMessage").style.display = "block";
+
+    console.log("[DEBUG] Sending visualization request with data:", requestData);
+
+    fetch("/visualize_data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(requestData)
+})
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert("Error generating visualization.");
+            return;
+        }
+
+        console.log("[DEBUG] Response from /visualize:", data);
+
+        updateMapVisualization(data); // ✅ Map overlay with tooltip values
+        renderTable(data);            // ✅ Table values below map
+
+        document.getElementById("loadingMessage").style.display = "none";
+        document.getElementById("mapContainer").style.display = "block";
+        document.getElementById("visualizationContainer").style.display = "block";
+    })
+    .catch(error => {
+        console.error("[ERROR] Visualization request failed:", error);
+        alert("Visualization request failed.");
+    });
+}
+
+
+
+// Build and inject table HTML
+function renderTable(data) {
+    const isNode = data.type === "node";
+    const elementType = isNode ? "Node" : "Link";
+
+    // Collect unique names (Node/Link IDs)
+    const elementNames = new Set();
+    const timestamps = [];
+    const valueMap = {};
+
+    for (let frame of data.frames) {
+        const time = frame.timestamp;
+        timestamps.push(time);
+        for (let item of frame.items) {
+            elementNames.add(item.name);
+            if (!valueMap[item.name]) valueMap[item.name] = {};
+            valueMap[item.name][time] = item.value;
+        }
+    }
+
+    const headerRow = ["<th>" + elementType + "</th>", ...timestamps.map(t => `<th>${t}</th>`)].join("");
+    const bodyRows = Array.from(elementNames).map(name => {
+        const row = [`<td>${name}</td>`];
+        for (let t of timestamps) {
+            row.push(`<td>${valueMap[name]?.[t] ?? "-"}</td>`);
+        }
+        return `<tr>${row.join("")}</tr>`;
+    });
+
+    const html = `
+        <h3>${data.parameter.toUpperCase()} Values</h3>
+        <div style="overflow-x:auto;">
+            <table border="1" class="table table-bordered">
+                <thead><tr>${headerRow}</tr></thead>
+                <tbody>${bodyRows.join("")}</tbody>
+            </table>
+        </div>
+    `;
+
+    document.getElementById("visualizationContainer").innerHTML = html;
+}
+
+
+
+function updateMapVisualization(data) {
+    if (!window.epanetMap) return;
+
+    // ✅ Clear static layout layer from upload
+    if (window.layoutLayerGroup) {
+        window.layoutLayerGroup.clearLayers();
+    }
+
+    // ✅ Prepare or clear the dynamic value layer
+    if (window.valueLayerGroup) {
+        window.valueLayerGroup.clearLayers();
+    } else {
+        window.valueLayerGroup = L.layerGroup().addTo(window.epanetMap);
+    }
+
+    const isAnimated = data.view_type === "animated";
+    const frames = data.frames;
+    const param = data.parameter.charAt(0).toUpperCase() + data.parameter.slice(1); // Capitalize
+
+    let currentFrame = 0;
+
+    function renderFrame(frame) {
+        window.valueLayerGroup.clearLayers();
+        for (let item of frame.items) {
+            if (item.type === "node") {
+                L.circleMarker([item.lat, item.lon], {
+                    radius: 6,
+                    fillColor: getColor(item.value),
+                    fillOpacity: 0.8,
+                    color: "#333",
+                    weight: 1
+                })
+                .bindTooltip(`Node: ${item.name}<br>${param}: ${item.value}<br>Time: ${item.timestamp}`, {
+                    sticky: true
+                })
+                .addTo(window.valueLayerGroup);
+            } else if (item.type === "link") {
+                L.polyline([item.start, item.end], {
+                    color: getColor(item.value),
+                    weight: 3
+                })
+                .bindTooltip(`Link: ${item.name}<br>${param}: ${item.value}<br>Time: ${item.timestamp}`, {
+                    sticky: true
+                })
+                .addTo(window.valueLayerGroup);
+            }
+        }
+    }
+
+    if (isAnimated) {
+        renderFrame(frames[0]);
+        let interval = setInterval(() => {
+            currentFrame += 1;
+            if (currentFrame >= frames.length) {
+                clearInterval(interval);
+                return;
+            }
+            renderFrame(frames[currentFrame]);
+        }, 1000);
+    } else {
+        renderFrame(frames[0]);
+    }
+}
+
+
+function getColor(value) {
+    // Simple linear mapping (customize scale as needed)
+    if (value < 1) return "#1a9850";
+    if (value < 3) return "#91cf60";
+    if (value < 5) return "#d9ef8b";
+    if (value < 10) return "#fee08b";
+    if (value < 20) return "#fc8d59";
+    return "#d73027";
+}
+    </script>
+
+</body>
+</html> 
